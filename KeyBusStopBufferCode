@@ -1,0 +1,126 @@
+#Code for creating an 800metre(HalfMile) buffer around key bus stops in Boston
+
+
+
+DROP TABLE IF EXISTS gtfs_routes;
+
+--Set up table
+create table gtfs_routes (
+	route_id text,
+	agency_id text,
+	route_short_name text,
+	route_long_name text,
+	route_desc text,
+	route_fare_class text,
+	route_type int,
+	route_url text,
+	route_color text,
+	route_text_color text,
+	route_sort_order int,
+	line_id text,
+	listed_route text
+);
+
+-- Import from CSV
+COPY gtfs_routes FROM routes.txt
+
+-- Test
+
+SELECT * FROM gtfs_routes 
+	WHERE gtfs_routes.route_desc LIKE 'Key Bus' OR
+	gtfs_routes.route_desc LIKE 'Rapid Transit';
+
+DROP TABLE IF EXISTS gtfs_trips;
+
+CREATE TABLE gtfs_trips (
+  	route_id text , --REFERENCES gtfs_routes(route_id),
+  	service_id    text , --REFERENCES gtfs_calendar(service_id),
+  	trip_id text ,--PRIMARY KEY,
+  	trip_headsign text,
+	trip_short_name text,
+  	direction_id  int , --REFERENCES gtfs_directions(direction_id),
+  	block_id text,
+  	shape_id text,  
+  	wheelchair_accessible int, --FOREIGN KEY REFERENCES gtfs_wheelchair_accessible(wheelchair_accessible)
+	trip_route_type int,
+	route_pattern_id text,
+	bikes_allowed int
+);
+
+COPY gtfs_trips FROM trips.txt
+
+DROP TABLE IF EXISTS gtfs_stops;
+
+--Set up table
+create table gtfs_stops (
+	stop_id    text ,--PRIMARY KEY,
+  	stop_name  text , --NOT NULL,
+  	stop_desc  text,
+  	stop_lat   double precision,
+  	stop_lon   double precision,
+  	level_id text,
+  	location_type int,
+  	parent_station text,
+  	wheelchair_boarding int,
+  	stop_code  text,
+  	platform_code text,
+  	platform_name text,
+  	zone_id    text,
+  	stop_url   text,
+  	stop_address text
+);
+
+-- Import from CSV
+COPY gtfs_stops FROM stops.txt
+
+-- Add the_geom column to the gtfs_stops table - a 2D point geometry
+SELECT AddGeometryColumn('gtfs_stops', 'the_geom', 4326, 'POINT', 2);
+
+-- Update the the_geom column
+UPDATE gtfs_stops SET the_geom = ST_SetSRID(ST_MakePoint(stop_lon, stop_lat), 4326);
+
+-- Create spatial index
+CREATE INDEX "gtfs_stops_the_geom_gist" ON "gtfs_stops" using gist ("the_geom" gist_geometry_ops_2d);
+
+
+SELECT DISTINCT s.stop_id, s.stop_name, r.route_short_name
+FROM gtfs_routes AS r, gtfs_trips AS t, gtfs_stop_times AS st, gtfs_stops AS s
+WHERE route_desc = 'Key Bus'
+	AND r.route_id=t.route_id
+	AND t.trip_id=st.trip_id
+	AND st.stop_id=s.stop_id;
+	
+SELECT
+
+/*
+Create a table with stops served by Key Bus Routes
+*/
+
+CREATE TABLE frequent_stops AS
+SELECT DISTINCT r.route_short_name,s.stop_name,s.the_geom
+FROM 		gtfs_stop_times AS st,
+							gtfs_stops AS s,
+							gtfs_trips AS t,
+							gtfs_routes AS r
+WHERE
+				s.stop_id=st.stop_id AND
+				st.trip_id=t.trip_id AND
+				t.route_id=r.route_id AND
+				route_desc LIKE 'Key Bus';
+
+SELECT*FROM frequent_stops; --check results
+
+/*
+Select an 800 metre (~half mile) buffer around frquent stops, then union.
+The result shoudl be one row, with a geom column.
+CRS 2163 = US National Atlas Equal-Area proection
+*/
+CREATE TABLE frequent_buffer AS
+SELECT ST_UNION(
+			ST_BUFFER(
+						ST_TRANSFORM(the_geom,2163)
+			,800)--800m
+)FROM frequent_stops;
+
+SELECT*FROM frequent_buffer; --check results
+	
